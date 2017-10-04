@@ -1,0 +1,468 @@
+---
+title: "Tail Demography"
+author: "Christopher Agard, George Middendorf, and Andres Roubicek"
+date: "September 3, 2017"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+rm(list=ls()) #clears the environment
+# filefolder="G:/Lizard work for the road/excel files"
+filefolder="C:/Users/test/Documents/Chris/Research/Sceloporus/Caudal Autotomy/Demography"
+knitr::opts_knit$set(root.dir = normalizePath(filefolder)) 
+#this is an option we have to use for RMD notebooks otherwise the wd is reset after each chunk is executed
+#setwd(filefolder) #this can be used instead for a regular rscript
+options(pkgType = "source")
+mypackages=c("rio","ggplot2","stringr","tables","knitr","xlsx","rJava") 
+neededpackages=mypackages[which(!is.element(el=mypackages,set=installed.packages()))]
+if(length(neededpackages>0)){
+    install.packages(neededpackages)
+}else{
+    warning("All packages already installed")
+}
+lapply(mypackages,function(x) library(x,character.only = T))
+```
+
+#Getting and Preprocessing the Data
+
+The goal of this section is to read the data into R from the source files and to prepare the data to be analyzed
+
+##Getting the Data
+Next we must read the .xls and .xlsx files into r.  Since each file may have a different number of columns and different column headers, we cannot simply import them as a data frame.  Instead we will read each file into r as a separate element of a list *mydata*.
+```{r}
+myfiles<-list.files( path = "excelFiles",pattern = c(".xls",".xlsx"))
+myfiles_path<-lapply(myfiles,function(x)paste("excelFiles",x,sep = "/"))
+mydata<-lapply(myfiles_path,function(x) read.xlsx(x,sheetIndex = 1))
+```
+
+## cleaning the Data
+Now that the data have been read into R as elements in the list *mydata*, if we take a look at the values
+```{r}
+lapply(mydata,head)
+```
+in the columns, we see that we will need to clean the data by:
+
+-*removing empty columns*
+-*changing all column names and entries to lowercase*: this standardizes species and sex entries.
+-*correcting values in "tl" and "rtl" that have "(", ")", or "-". where they shouldn't be*
+-*assigning variables(columns) to appropriate classes, where necessary*
+-*standardizing variable names*
+-*move data to a data frame for analysis*
+
+#Remove Empty Columns
+I'm not sure why this happens, but calling the "read.xslx" resulted in a list a of data frames that each have several  empty columns at the end of the file.  There may be a way to fix this in the import, but I don't know what that is.  We can remove this step if that issue is ever resolved.
+
+There are two programmatic ways that I can think to proceed here: 
+
+1-*Create an index of empty columns for a file and use this to trim the data frame and apply this proceedure across all elements of the list.* This is the option I would prefer since it is the most flexible and the least likely to result in accidental data loss and I think would be the most elegant solution. We will however lose any column that contains no data, but either appproach bears this risk.
+        - for this approach we will create a function to determine if a column is empty and if the name of the column contains "NA." The function will return a negative index that identifies those columns. If no such columns exist, the formula returns a vector of interger from 1 to the length of the dataset supplied to the function.
+```{r}
+emptyCol<-function(column){
+        NAS<-apply(column,2,function(x) sum(is.na(x))/length(x))#number of NA values
+        NAS<-which(NAS==1)
+        NAnames<-grep(pattern = "NA.",x = names(column),ignore.case = T)
+        result<-intersect(NAS,NAnames)
+        if(length(result)==0){
+                return(1:length(column))
+        }else{
+                return(-result)
+        }
+}
+```
+        -then we will apply this to the full list of data.
+```{r, include=FALSE}
+mydata_trim<-lapply(mydata,function(x) x[,emptyCol(x)])
+print(lapply(mydata_trim,names))
+```
+2-*Since the empty data columns appear to be added to the end of the file, search through the a data frame for the first instance of an empty column and trimming the data frame to only include columns with an index smaller than that of the first empty column.* This could lead to data loss if the data frame has any empty columns inserted between columns with data.  We could add a bit of security by checking for the first instance of two consecutive empty columns. It is less likely, but the insertion of 2 consecutive empty columns between columns containing data.  
+        -For now, unless we have reason to tackle this, we won't develop this approach.
+        
+
+#Change all column names and entries to lowercase*: this standardizes species and sex entries.
+```{r, include=FALSE}
+for(i in 1:length(mydata)){ #change all colnames to lowercase
+  names(mydata_trim[[i]])<-tolower(names(mydata_trim[[i]]))
+}
+# change all entries to lowercase
+## FIX this - make this only apply to "sex" and "species"
+for(i in 1:length(mydata_trim)){
+    for(j in 1:ncol(mydata_trim[[i]])){
+        mydata_trim[[i]][,j]<-tolower(mydata_trim[[i]][,j])
+    }
+}
+```
+
+#Here is where I think we should search for "-" in the "tl" and "rtl" columns and individually correct them.
+
+First we'll have to standardize the names of the "tl" and "rtl" columns
+```{r}
+#RESUME HERE
+tl_rtl<-lapply(mydata_trim,function(x) grep(pattern = "tl",x = names(x),ignore.case = T,value = T))
+lapply(tl_rtl,function(x)is.element(c("tl","rtl"),x)==c(1,1))
+```
+
+Since this only happens for one element in the list (i.e., for one year), we will use the following brute force method to address the columsn names in that year.
+```{r}
+names(mydata_trim[[11]])[which(names(mydata_trim[[11]])=="tl..mm.")]<-"tl"
+names(mydata_trim[[11]])[which(names(mydata_trim[[11]])=="rtl..mm.")]<-"rtl"
+names(mydata_trim[[11]])[which(names(mydata_trim[[11]])=="svl..mm.")]<-"svl"
+names(mydata_trim[[11]])
+```
+
+```{r}
+for(i in 1:length(mydata_trim)){
+        mydata_trim[[i]][,"tl"]<-gsub(pattern = "-",replacement = "",x = mydata_trim[[i]][,"tl"])
+}
+wrongDash_rtl<-unique(unlist(lapply(mydata_trim,function(x) unique(grep(pattern = " |-|\\(|\\)",x = x$rtl,value = T)))))
+wrongDash_rtl<-wrongDash_rtl[which(wrongDash_rtl!="-1")]
+wrongDash_tl<-unique(unlist(lapply(mydata_trim,function(x) unique(grep(pattern = " |-|\\(|\\)",x = x$tl, value = T)))))
+wrongDash_svl<-unique(unlist(lapply(mydata_trim,function(x) unique(grep(pattern = " |-|\\(|\\)",x = x$svl, value = T)))))
+```
+Let's take a look at the problematic values and replace them with appropriate ones.
+```{r}
+print(wrongDash_rtl)
+print(wrongDash_tl)
+print(wrongDash_svl)
+for(i in 1:length(mydata_trim)){
+        for(j in 1:nrow(mydata_trim[[i]])){
+                if(is.na(mydata_trim[[i]][j,"rtl"])){
+                        next()
+                        }else{
+                                if(mydata_trim[[i]][j,"rtl"]=="-"){
+                                        mydata_trim[[i]][j,"rtl"]<-NA
+                                }
+                                if(mydata_trim[[i]][j,"rtl"]=="32 -12"){
+                                        mydata_trim[[i]][j,"rtl"]<-"32"
+                                }
+                                if(mydata_trim[[i]][j,"rtl"]=="10(kink)"){
+                                        mydata_trim[[i]][j,"rtl"]<-"10"
+                                }
+                        }
+                if(is.na(mydata_trim[[i]][j,"tl"])){
+                        next()
+                        }else{
+                                if(mydata_trim[[i]][j,"tl"]=="56 (42)"){
+                                        mydata_trim[[i]][j,"tl"]<-"56"
+                                }
+                        }
+                if(is.na(mydata_trim[[i]][j,"svl"])){
+                        next()
+                        }else{
+                                if(mydata_trim[[i]][j,"svl"]=="-"){
+                                        mydata_trim[[i]][j,"svl"]<-NA
+                                }
+        }
+}
+```
+
+##Assign variables(columns) to appropriate classes, where necessary
+By executing the code chunk below, we see that in all of the columns have been forced to be character vector. 
+
+```{r}
+# rm(mydata)
+for(i in 1:length(mydata_trim)){print(apply(mydata_trim[[i]],2,class))}
+```
+
+We won't address this here, because it will be easier to handle once most of the extraneous columns have been removed and the column names standardized.
+
+##Standardize variable names
+Next we need to drop extraneous variables.  By extraneous, we mean those variables (column headings) which are not common across files to a particular year. We will achieve this by first creating a character vector populated with the names of the variables we wish to keep and converting it a single string vector of the same names separated by "|". That string will be used to identify variables which should be excluded or kept. 
+
+This portion renames/standardizes variable names which we wish to keep. *Note: This code needs to to have *replace_names* supplied by hand.*
+```{r, include=TRUE}
+keepnames<-c("species", "toes","date","sex","svl","tl","rtl","mass","paint.mark","location","meters","new.recap","vial","painted","misc")
+
+p.keepnames<-c()
+for(name in keepnames){p.keepnames<-paste(p.keepnames,name,"|",sep = "")}
+p.keepnames<-substr(p.keepnames,1,nchar(p.keepnames)-1)
+
+rawnames<-lapply(mydata_trim,names)#original names for each year's data
+
+mydata_vars<-list()#will eventually only contain columns with variable names that can be kept or fixed
+droppedvar<-list() #Will eventually only contain variables dropped from mydata to create mydata_goodNames
+for(i in 1:length(rawnames)){
+    for(j in 1:length(rawnames[[i]])){
+        if(length(grep(pattern = p.keepnames,x=rawnames[[i]][j])>0)){
+            for(name in keepnames){
+                if(length(grep(pattern= name,x=rawnames[[i]][j]))>0){
+                    rawnames[[i]][j]<-name
+                }
+            }
+            }else{
+                rawnames[[i]][j]<-"DROP"
+            }
+    }
+    droppedvar[[i]]<-mydata_trim[[i]][,which(rawnames[[i]]=="DROP")]#creates new list with dropped variables
+    names(droppedvar[[i]])<-rawnames[[i]][which(rawnames[[i]]=="DROP")]#attaches names to droppedvar
+    mydata_vars[[i]]<-mydata_trim[[i]][,which(rawnames[[i]]!="DROP")]#creates new list with kept variables
+    names(mydata_vars[[i]])<-rawnames[[i]][which(rawnames[[i]]!="DROP")]#attaches mapped names to mydata_goodNames
+}
+#print(lapply(mydata_vars, names))
+```
+
+If we change "include" argument to "TRUE" in the above chunk and run it again, We can see that "tl" substituted "rtl" and "tl" variables.  We will try to correct this by looking at the minimum values in the columns for each year and, for those variable with a minimum of 0 or less, we can change the variable name to "rtl". 
+Before we do this, let us address the issue of reassigning classes of the columns.  We will address this here using the applying the class() function to those items which need to be changed.  Based on the standardized names in each year,
+
+A class of "character" is appropriate for all columns except "svl", "tl", "mass", and "meters".  These are the columns which need to be assigned the class "numeric".
+
+```{r,include=FALSE}
+lapply(mydata_vars,names)
+bar<-c("svl","tl","rtl","mass","meters")
+lapply(mydata_vars,function(x) x[,"svl"]<-as.numeric(x[,"svl"]))
+lapply(mydata_vars,function(x) x[,"rtl"]<-as.numeric(x[,"rtl"]))
+lapply(mydata_vars,function(x) x[,"mass"]<-as.numeric(x[,"mass"]))
+lapply(mydata_vars,function(x) x[,"meters"]<-as.numeric(x[,"meters"]))
+for(i in 1:length(mydata_vars)){print(apply(mydata_vars[[i]],2,class))}
+```
+
+```{r, include=TRUE}
+for(i in 1:length(mydata_vars)){
+    for(j in 1:length(mydata_vars[[i]])){
+        if(names(mydata_vars[[i]][j])=="tl"){
+            if(min(mydata_vars[[i]][,j],na.rm = T)<=0){
+                names(mydata_vars[[i]])[j]<-"rtl"
+                print(names(mydata_vars[[i]][j]))
+            }
+        }
+    }
+}
+names(mydata_vars[[5]])[6]<-"tl"
+lapply(mydata_vars,function(x) x[,"tl"]<-as.numeric(x[,"tl"]))
+lapply(mydata_vars,function(x) x[,"rtl"]<-as.numeric(x[,"rtl"]))
+```
+We need to inspect the 5th element in mydata_vars to see why the names "rtl" appears instead of "tl" and "rtl".
+```{r}
+class(mydata_vars[[5]][,7])
+unique(mydata_vars[[5]][,7])
+mydata_vars[[5]][which(mydata_vars[[5]][,6]==""),]
+#this will be dropped in cleaning anyway, but a brute force fix will allow us to move forward 
+mydata_vars[[5]][which(mydata_vars[[5]][,"rtl"]==""),"rtl"]<-NA
+mydata_vars[[5]][374,"svl"]<-NA
+mydata_vars[[5]][374,]
+# unique(mydata_vars[[5]][,"rtl.1"])
+```
+
+Now we name add the variable year to each element of the list according the year of data that each element contains.
+```{r}
+# rm(mydata_trim)
+myxls=list.files(path = "C:/Users/test/Documents/Chris/Research/Sceloporus/Caudal Autotomy/Demography/excelFiles",pattern="x.xls")
+myyears<-strsplit(x=myxls,split = "xCC|x.xls")#creates a vector of the years for the data
+myyears<-sapply(myyears,function(x) x[2])
+
+#creates a variable, year, in each sublist of mydata_vars and populates it with the appropriate year from myyears
+for(i in 1:length(mydata_vars)){
+        mydata_vars[[i]][,"year"]<-myyears[i]
+        }
+```
+
+Here we drop unwanted data for:
+    -species (those other than Sj and Sv)
+    -those which do not have data for critical variables (species, svl, tl, rtl, toes)
+We also handle data for toes:
+    -where a letter was included in the entry to distinguish separate animals with the same toes removed. We do this by capturing the letter in a new variable, unique_id, and removing the letter from the toes column.
+    -special characters and leading spaces or single quotes in toe data are removed
+    -a character vector of binary representation of toe clip marking is generated from cleaned toes
+    
+##Move data to a data frame for analysis*
+
+Now we create a data frame, mycombfile on which analyses will be conducted and reclassify the appropriate variables as numeric variable.  For some reason, they were classified as character vectors during the population of the data.frame.
+```{r}
+mycombfile<-data.frame()
+for(i in 1:length(mydata_vars)){
+    mycombfile<-rbind(mycombfile,mydata_vars[[i]])
+}
+
+#reclassify date as date values
+```
+
+
+```{r, include=FALSE}
+#Eliminate entries for species other than Sj and Sv
+ind_SjSv<-grep('sv|sj|j|v',mycombfile[,"species"])
+mycombfile<-mycombfile[ind_SjSv,]
+ind_noNA<-which(!is.na(mycombfile[,"svl"]) & !is.na(mycombfile[,"tl"]) & !is.na(mycombfile[,"rtl"]))
+mycombfile<-mycombfile[ind_noNA,]
+nrow(mycombfile)
+
+##Eliminate entries without toes
+ind_toes<-which(!is.na(mycombfile[,"toes"])==T)
+mycombfile<-mycombfile[ind_toes,]
+nrow(mycombfile)
+
+
+# unique_id<-vector(mode = "character",length = nrow(mycombfile))
+
+# names(mycombfile)[length(mycombfile)]<-"unique_id"
+names(mycombfile)[which(names(mycombfile)=="toes")]<-"toes_orig"
+mycombfile[,"toes"]<-mycombfile[,"toes_orig"]
+
+my_a<-grep(pattern = "a",x = mycombfile["toes"],ignore.case = T)
+my_b<-grep(pattern = "b",x = mycombfile["toes"],ignore.case = T)
+
+mycombfile[my_a,"unique_id"]<-"a"
+mycombfile[my_b,"unique_id"]<-"b"
+table(mycombfile$unique_id)
+#eliminate letters from toes 
+
+#fix this, gsub calls don't seem to work
+for(i in 1:nrow(mycombfile)){
+        mycombfile[i,"toes"]<-gsub(pattern = "-a|-b| a| b|a|b",replacement = "",x = mycombfile[i,"toes"] ,fixed = F)
+}
+
+##Standardizing toes by making separators into " " 
+##replace single quotes and parentheses with nothing in toes column
+
+for(i in 1:nrow(mycombfile)){
+        mycombfile[i,"toes"]<-gsub(pattern="'|\\(|\\)|\\.000000|\\?|-\\?",replacement= "",x=mycombfile[i,"toes"],fixed = F)
+}
+
+## replace single spaces with a dash in toes column
+
+```
+ 
+ Now we fix "j" and "v" replacing them with "sj" and "sv", respectively.
+```{r}
+for(j in 1:nrow(mycombfile)){
+        if(mycombfile[j,"species"]=="j"){
+                mycombfile[j,"species"]<-"sj"
+        }
+        if(mycombfile[j,"species"]=="v"){
+                mycombfile[j,"species"]<-"sv"
+        }
+}
+
+speciesEntries<-unique(mycombfile[,"species"])
+print(speciesEntries)
+
+```
+
+The following chunk of code takes a long time (~2minutes to execute).  Figure out why and speed this up.
+```{r, include=FALSE}
+for(i in 1:nrow(mycombfile)){
+        mycombfile[i,"toes"]<-gsub(pattern="\\/| |\\/20| - |-0",replacement="-",x=mycombfile[i,"toes"],fixed = T)
+}
+
+print(nchar(mycombfile[1,"toes"]))
+print(mycombfile[1,"toes"])
+
+```
+
+
+```{r}
+for(j in 1:nrow(mycombfile)){
+        while(any(str_sub(mycombfile[j,"toes"],1L,1L)=="-| ")){
+                ##find any dashes that are the first character in an entry
+                ind_d1<-which(str_sub(mycombfile[j,"toes"],1L,1L)=="-| ")
+                ##removes 1st dash in entries 
+                mycombfile[ind_d1,"toes"]<-str_sub(mycombfile[ind_d1,"toes"],2)
+        }
+        while(any(str_sub(mycombfile[,"toes"],-1L,-1L)=="-| ")){
+                ##find any dashes that are the last character in an entry
+                ind_d2<-which(str_sub(mycombfile[,"toes"],-1L,-1L)=="-| ")
+                ##removes trailing dash in entries 
+                mycombfile[ind_d2,"toes"]<-str_sub(mycombfile[,"toes"][ind_d2],1L,-2)
+        }
+}
+```
+
+```{r}
+#FIX this part of the code currently
+##create column with binary representations of toe loss status for all 20 toes
+## 1= toe loss; 0 = no loss; e.g. is only toe 20 is missing, the 20th character 
+## will be 1 and all other chracters will be 0
+##create new column with class character containing a string of twenty zeros in each entry
+
+# rm(ind_noNA)
+# rm(ind_toes)
+# rm(ind_SjSv)
+
+mycombfile[,"toes_bin"]<-c()
+mycombfile[,"toes_bin"]="00000000000000000000"
+
+test<-list()
+for(j in nrow(mycombfile)){
+        test[[j]]<-strsplit(mycombfile[j,"toes"], split = "-")
+        }
+test[1]
+
+for(j in 1:nrow(mycombfile)){
+        my_toes_bar<-unlist(strsplit(as.character(mycombfile["toes"]), split = " |-"))#split arguement 
+        ntoe<-as.integer(my_toes_bar[])
+        substr(mycombfile[j,"toes_bin"],ntoe,ntoe)<-"1"
+        }
+        # rm(my_toes_bar)
+        # rm(ntoe)
+}
+length(mycombfile[which(is.na(mycombfile$toes_bin)),"toes_orig"])
+head(mycombfile[which(is.na(mycombfile[,"toes_bin"])),c("toes","toes_bin")])
+```
+
+```{r}
+#lapply(mydata_vars,function(x) table(x[,"toes_bin"]))# This is a check to see if the binary toe clip representations were generated properly for all files. There should be a lot of these and mostly unique within species.  This should, in fact, match the result of a similar operation on the numerical toes.
+```
+
+```{r}
+#deal with sex
+table(mycombfile$sex)
+
+## convert definite f values to f and m values to m
+mycombfile$sex<-gsub(pattern = "f ",replacement = "f",x = mycombfile$sex,ignore.case = T)
+mycombfile$sex<-gsub(pattern = "m |male|n",replacement = "m",x = mycombfile$sex,ignore.case = T)
+
+table(mycombfile$sex)
+```
+
+The operations here need to be determined based on the results of manual check(s).
+```{r}
+## check
+table(mycombfile$sex)
+
+##create a second sex column with only definite values
+mycombfile$sex_certain<-mycombfile$sex
+mycombfile$sex_certain<-gsub(pattern = "\\?|f\\?",replacement = NA,x = mycombfile$sex_certain,ignore.case = T)
+
+## check
+table(mycombfile$sex_certain)
+```
+
+We follow a similar proces for cleaning species data.
+```{r}
+# deal with species
+table(mycombfile$species)
+
+mycombfile[which(mycombfile$species=="sj?"),]
+mycombfile[which(mycombfile$toes=="4-10-19"),] 
+####decision: convert "sj?" to "sv"
+### convert definite sj values to sj
+mycombfile$species<-gsub(pattern = "sj\\?|sv ",replacement = "sv",x = mycombfile$species,ignore.case = T)
+mycombfile$species<-gsub(pattern = "sj ",replacement = "sj",x = mycombfile$species,ignore.case = T)
+table(mycombfile$species)#check
+```
+
+##Handling Duplicate Data
+Here we identify instances where the duplicate combinations of the critical variables species, sex, and toes occur within the same year. First we will create a categorical variable, tailcondition, which is determined by the magnitude and sign of the value in the RTL column. 
+```{r}
+mycombfile$tailcondition<-"Intact"
+mycombfile[which(mycombfile$rtl>0),"tailcondition"]<-"Regrown"
+mycombfile[which(mycombfile$rtl<0),"tailcondition"]<-"Autotomized"
+
+# mycomparables<-mycombfile[,c("species","toes_orig","sex_certain","year")]
+
+
+```
+Then we will create a variable that identifies whether or not an entries values for the critial variabels are found elsewhere within the entries for that year.
+```{r}
+mydupvalues<-mycombfile[which(duplicated(mycomparables)==T|duplicated(mycomparables,fromLast = T)==T),]#returns records for duplicated values
+nrow(mydupvalues)#Check
+
+mydupvalues<-mydupvalues[with(mydupvalues,order(year,sex_certain,toes_orig)),]#orders mydupvalues by year sex and toes
+mycombfile$dupInYear<-"No" #Create a new variable identifying duplicate data
+mycombfile[which(duplicated(mycomparables)==T|duplicated(mycomparables,fromLast = T)==T),"dupInYear"]<-"Yes"
+```
+
+write file to an .xlsx
+```{r}
+filename<- paste("Combined",min(mycombfile$year),max(mycombfile$year),".xlsx",sep = "_")
+write.xlsx(x = mycombfile,file =filename)
+```
